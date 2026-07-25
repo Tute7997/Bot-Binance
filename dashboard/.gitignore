@@ -1,0 +1,16 @@
+# Dependencias
+node_modules/
+
+# Build de Next.js
+.next/
+out/
+
+# Variables de entorno - NUNCA subir a GitHub
+.env.local
+.env
+
+# Logs
+npm-debug.log*
+
+# Sistema
+.DS_Store

@@ -18,6 +18,7 @@ import requests
 from binance.client import Client
 from binance.exceptions import BinanceAPIException, BinanceOrderException
 from dotenv import load_dotenv
+from supabase import create_client
 
 # =============================================================================
 # CONFIGURACION Y PARAMETROS DE LA ESTRATEGIA
@@ -53,6 +54,11 @@ ARCHIVO_LOG_BOT = "bot.log"
 
 # Endpoint oficial de Binance Spot Testnet (resguardo por compatibilidad de version)
 BINANCE_TESTNET_URL = "https://testnet.binance.vision/api"
+
+# Nombres de tablas en Supabase (usadas por el dashboard)
+TABLA_TRADES = "trades"
+TABLA_HEARTBEAT = "bot_heartbeat"
+HEARTBEAT_ID = 1  # fila unica que se va actualizando (upsert) en cada ciclo
 
 
 # =============================================================================
@@ -96,6 +102,34 @@ def cargar_cliente_binance():
 
     logger.info("Cliente de Binance Testnet inicializado correctamente.")
     return cliente
+
+
+def cargar_cliente_supabase():
+    """
+    Carga las credenciales desde .env.local y crea el cliente de Supabase,
+    usado unicamente para que el dashboard web pueda leer el estado del bot
+    y el historial de trades. Si falta la configuracion, el bot sigue
+    funcionando igual (solo no se refleja en el dashboard).
+    """
+    load_dotenv(dotenv_path=".env.local")
+
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY")
+
+    if not url or not key:
+        logger.warning(
+            "Faltan SUPABASE_URL o SUPABASE_KEY en .env.local. "
+            "El dashboard no va a recibir datos del bot."
+        )
+        return None
+
+    try:
+        cliente_supabase = create_client(url, key)
+        logger.info("Cliente de Supabase inicializado correctamente.")
+        return cliente_supabase
+    except Exception as error:
+        logger.error(f"Error inicializando cliente de Supabase: {error}")
+        return None
 
 
 def cargar_config_telegram():
@@ -372,6 +406,77 @@ def verificar_salida(posicion: dict, precio_actual: float):
 
 
 # =============================================================================
+# REGISTRO DE TRADES EN SUPABASE (para el dashboard web)
+# =============================================================================
+
+def registrar_trade_apertura_supabase(supabase, par: str, precio_entrada: float, cantidad: float):
+    """
+    Inserta una fila en la tabla "trades" de Supabase al abrir una posicion.
+    Devuelve el id de la fila insertada (para poder actualizarla al cerrar),
+    o None si Supabase no esta configurado o la insercion falla.
+    """
+    if supabase is None:
+        return None
+
+    try:
+        respuesta = supabase.table(TABLA_TRADES).insert({
+            "pair": par,
+            "side": "BUY",
+            "entry_price": precio_entrada,
+            "quantity": cantidad,
+            "status": "open",
+        }).execute()
+
+        trade_id = respuesta.data[0]["id"]
+        logger.info(f"[{par}] Trade registrado en Supabase (id={trade_id}).")
+        return trade_id
+    except Exception as error:
+        logger.error(f"[{par}] Error insertando trade en Supabase: {error}")
+        return None
+
+
+def actualizar_trade_cierre_supabase(
+    supabase, trade_id, precio_salida: float, ganancia_usd: float, ganancia_pct: float, motivo: str
+) -> None:
+    """
+    Actualiza en Supabase la fila del trade que se acaba de cerrar, con el
+    precio de salida, la ganancia y el motivo de cierre (TP o SL).
+    """
+    if supabase is None or trade_id is None:
+        return
+
+    try:
+        supabase.table(TABLA_TRADES).update({
+            "exit_price": precio_salida,
+            "profit": ganancia_usd,
+            "profit_percent": ganancia_pct,
+            "status": "closed",
+            "reason": motivo,
+        }).eq("id", trade_id).execute()
+        logger.info(f"Trade {trade_id} actualizado en Supabase (cierre {motivo}).")
+    except Exception as error:
+        logger.error(f"Error actualizando trade {trade_id} en Supabase: {error}")
+
+
+def actualizar_heartbeat_supabase(supabase) -> None:
+    """
+    Actualiza (upsert) una unica fila en "bot_heartbeat" con la hora actual.
+    El dashboard usa la antiguedad de este valor para mostrar si el bot
+    esta Activo o Inactivo.
+    """
+    if supabase is None:
+        return
+
+    try:
+        supabase.table(TABLA_HEARTBEAT).upsert({
+            "id": HEARTBEAT_ID,
+            "last_check": datetime.utcnow().isoformat(),
+        }).execute()
+    except Exception as error:
+        logger.error(f"Error actualizando heartbeat en Supabase: {error}")
+
+
+# =============================================================================
 # REGISTRO DE OPERACIONES (LOG DE TRADES EN CSV)
 # =============================================================================
 
@@ -395,7 +500,7 @@ def registrar_operacion(par: str, tipo: str, precio: float, cantidad: float, mot
 # ANALISIS PRINCIPAL (SE EJECUTA CADA MINUTO PARA CADA PAR)
 # =============================================================================
 
-def main_analysis(cliente: Client, posiciones: dict) -> None:
+def main_analysis(cliente: Client, posiciones: dict, supabase=None) -> None:
     """
     Recorre cada par configurado:
     - Si ya hay una posicion abierta en ese par, verifica si corresponde
@@ -416,9 +521,14 @@ def main_analysis(cliente: Client, posiciones: dict) -> None:
                     orden = place_order(cliente, simbolo, "SELL", posicion["cantidad"])
                     if orden:
                         ganancia_pct = (precio_actual - posicion["precio_entrada"]) / posicion["precio_entrada"] * 100
+                        ganancia_usd = (precio_actual - posicion["precio_entrada"]) * posicion["cantidad"]
                         texto_motivo = "Take Profit alcanzado" if motivo_salida == "TP" else "Stop Loss alcanzado"
 
                         registrar_operacion(simbolo, "VENTA", precio_actual, posicion["cantidad"], texto_motivo)
+                        actualizar_trade_cierre_supabase(
+                            supabase, posicion.get("trade_id_supabase"),
+                            precio_actual, ganancia_usd, ganancia_pct, motivo_salida,
+                        )
                         enviar_telegram(
                             f"🔴 Posicion cerrada en {simbolo}\n"
                             f"Motivo: {texto_motivo}\n"
@@ -463,10 +573,14 @@ def main_analysis(cliente: Client, posiciones: dict) -> None:
                 orden = place_order(cliente, simbolo, "BUY", cantidad)
                 if orden:
                     precio_entrada = float(ultima_vela["cierre"])
+                    trade_id_supabase = registrar_trade_apertura_supabase(
+                        supabase, simbolo, precio_entrada, cantidad
+                    )
                     posiciones[simbolo] = {
                         "precio_entrada": precio_entrada,
                         "cantidad": cantidad,
                         "timestamp": datetime.now().isoformat(),
+                        "trade_id_supabase": trade_id_supabase,
                     }
                     guardar_posiciones(posiciones)
 
@@ -501,6 +615,7 @@ def main() -> None:
     logger.info("=== Iniciando bot de trading en Binance Testnet ===")
 
     cliente = cargar_cliente_binance()
+    supabase = cargar_cliente_supabase()
     posiciones = cargar_posiciones()
 
     balance_inicial = get_balance(cliente, "USDT")
@@ -515,7 +630,8 @@ def main() -> None:
 
     while True:
         try:
-            main_analysis(cliente, posiciones)
+            actualizar_heartbeat_supabase(supabase)
+            main_analysis(cliente, posiciones, supabase)
         except Exception as error:
             # Cualquier error no controlado en un ciclo no debe tumbar el bot
             logger.exception(f"Error critico en el ciclo principal: {error}")
