@@ -7,6 +7,18 @@ const PARES_MONITOREADOS = ["BTCUSDT", "ETHUSDT"];
 // Si el heartbeat es mas viejo que esto, se considera que el bot esta inactivo
 const HEARTBEAT_LIMITE_SEGUNDOS = 150;
 
+// Endpoint publico de precios de Binance Testnet (no requiere API key)
+const BINANCE_TESTNET_TICKER_URL = "https://testnet.binance.vision/api/v3/ticker/price";
+
+async function obtenerPrecioActual(par) {
+  const respuesta = await fetch(`${BINANCE_TESTNET_TICKER_URL}?symbol=${par}`, {
+    cache: "no-store",
+  });
+  if (!respuesta.ok) throw new Error(`Binance respondio ${respuesta.status} para ${par}`);
+  const datos = await respuesta.json();
+  return parseFloat(datos.price);
+}
+
 export async function GET() {
   let supabase;
   try {
@@ -92,16 +104,52 @@ export async function GET() {
       posicionAbierta: paresConPosicionAbierta.has(par),
     }));
 
+    // --- Operaciones abiertas, con profit no realizado calculado en vivo ---
+    const operacionesAbiertas = await Promise.all(
+      (abiertos || []).map(async (trade) => {
+        let precioActual = null;
+        try {
+          precioActual = await obtenerPrecioActual(trade.pair);
+        } catch {
+          precioActual = null;
+        }
+
+        const minutosAbierto = Math.max(
+          0,
+          Math.floor((Date.now() - new Date(trade.created_at).getTime()) / 60000)
+        );
+
+        const profitActualPct =
+          precioActual !== null
+            ? ((precioActual - trade.entry_price) / trade.entry_price) * 100
+            : null;
+        const profitActualUsd =
+          precioActual !== null
+            ? (precioActual - trade.entry_price) * trade.quantity
+            : null;
+
+        return {
+          ...trade,
+          precioActual,
+          profitActualPct,
+          profitActualUsd,
+          minutosAbierto,
+        };
+      })
+    );
+
     return NextResponse.json({
       estadoBot,
       ultimoHeartbeat,
       gananciaTotal,
       winRate,
       totalCerrados,
+      totalAbiertos: operacionesAbiertas.length,
       ultimoTrade,
       historico,
       gananciasPorDia,
       paresActivos,
+      operacionesAbiertas,
     });
   } catch (error) {
     return NextResponse.json(

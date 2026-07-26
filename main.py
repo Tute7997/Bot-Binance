@@ -9,6 +9,7 @@ import csv
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime
 
@@ -59,6 +60,13 @@ BINANCE_TESTNET_URL = "https://testnet.binance.vision/api"
 TABLA_TRADES = "trades"
 TABLA_HEARTBEAT = "bot_heartbeat"
 HEARTBEAT_ID = 1  # fila unica que se va actualizando (upsert) en cada ciclo
+
+# Cada cuanto se manda por Telegram el resumen de posiciones abiertas
+INTERVALO_RESUMEN_SEGUNDOS = 1800  # 30 minutos
+
+# Protege el dict "posiciones" porque lo tocan tanto el loop principal (cada 60s)
+# como el hilo de resumen periodico (cada 30 min) al mismo tiempo.
+posiciones_lock = threading.Lock()
 
 
 # =============================================================================
@@ -153,6 +161,21 @@ TELEGRAM_TOKEN, TELEGRAM_CHAT_ID = cargar_config_telegram()
 # =============================================================================
 # ALERTAS POR TELEGRAM
 # =============================================================================
+
+def formatear_par(simbolo: str) -> str:
+    """Convierte 'BTCUSDT' en 'BTC/USDT' para que se lea mejor en los mensajes."""
+    if simbolo.endswith("USDT"):
+        return f"{simbolo[:-4]}/USDT"
+    return simbolo
+
+
+def formatear_duracion(minutos: int) -> str:
+    """Convierte una duracion en minutos a un texto tipo '2 minutos' o '1h 15m'."""
+    if minutos < 60:
+        return f"{minutos} minutos"
+    horas, minutos_restantes = divmod(minutos, 60)
+    return f"{horas}h {minutos_restantes}m"
+
 
 def enviar_telegram(mensaje: str) -> None:
     """
@@ -406,56 +429,158 @@ def verificar_salida(posicion: dict, precio_actual: float):
 
 
 # =============================================================================
+# ALERTAS DE TELEGRAM PARA APERTURA / CIERRE / RESUMEN DE POSICIONES
+# =============================================================================
+
+def enviar_telegram_trade_abierto(par: str, precio_entrada: float, cantidad: float) -> None:
+    """Manda el aviso detallado de 'OPERACION ABIERTA' con target y stop loss."""
+    target = precio_entrada * (1 + PROFIT_TARGET)
+    stop = precio_entrada * (1 - STOP_LOSS)
+    hora = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+    enviar_telegram(
+        "🟢 OPERACIÓN ABIERTA\n"
+        f"Par: {formatear_par(par)}\n"
+        f"Entrada: ${precio_entrada:,.2f}\n"
+        f"Cantidad: {cantidad} {par.replace('USDT', '')}\n"
+        f"Target: ${target:,.2f} (+{PROFIT_TARGET * 100:.0f}%)\n"
+        f"Stop Loss: ${stop:,.2f} (-{STOP_LOSS * 100:.0f}%)\n"
+        f"Hora: {hora}"
+    )
+
+
+def enviar_telegram_resumen_posiciones(cliente: Client, posiciones: dict) -> None:
+    """
+    Manda por Telegram un resumen de todas las posiciones abiertas (par,
+    profit actual, target, stop y tiempo abierto). Si no hay ninguna
+    posicion abierta no manda nada, para no generar alertas vacias cada
+    30 minutos mientras el bot esta inactivo.
+    """
+    with posiciones_lock:
+        snapshot = dict(posiciones)
+
+    if not snapshot:
+        return
+
+    lineas = ["📊 RESUMEN OPERACIONES ABIERTAS", ""]
+    numeros = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+    profit_total_usd = 0.0
+
+    for indice, (par, posicion) in enumerate(snapshot.items()):
+        try:
+            precio_actual = float(cliente.get_symbol_ticker(symbol=par)["price"])
+        except BinanceAPIException as error:
+            logger.error(f"[{par}] Error obteniendo precio para el resumen: {error}")
+            continue
+
+        precio_entrada = posicion["precio_entrada"]
+        profit_pct = (precio_actual - precio_entrada) / precio_entrada * 100
+        profit_usd = (precio_actual - precio_entrada) * posicion["cantidad"]
+        profit_total_usd += profit_usd
+
+        target = precio_entrada * (1 + PROFIT_TARGET)
+        stop = precio_entrada * (1 - STOP_LOSS)
+        minutos_abierto = int(
+            (datetime.now() - datetime.fromisoformat(posicion["timestamp"])).total_seconds() / 60
+        )
+
+        etiqueta = numeros[indice] if indice < len(numeros) else f"{indice + 1}."
+        lineas.append(f"{etiqueta} {formatear_par(par)}")
+        lineas.append(f"  Entrada: ${precio_entrada:,.2f} | Profit actual: {profit_pct:+.1f}%")
+        lineas.append(f"  Target: ${target:,.2f} | Stop: ${stop:,.2f}")
+        lineas.append(f"  Tiempo abierto: {formatear_duracion(minutos_abierto)}")
+        lineas.append("")
+
+    lineas.append("═" * 31)
+    lineas.append(f"Total abierto: {len(snapshot)} operaciones")
+    lineas.append(f"Profit total actual: {'+' if profit_total_usd >= 0 else '-'}${abs(profit_total_usd):.2f}")
+
+    enviar_telegram("\n".join(lineas))
+
+
+def hilo_resumen_periodico(cliente: Client, posiciones: dict) -> None:
+    """Hilo de fondo que manda el resumen de posiciones abiertas cada 30 minutos."""
+    while True:
+        time.sleep(INTERVALO_RESUMEN_SEGUNDOS)
+        try:
+            enviar_telegram_resumen_posiciones(cliente, posiciones)
+        except Exception as error:
+            logger.error(f"Error enviando el resumen periodico de posiciones: {error}")
+
+
+# =============================================================================
 # REGISTRO DE TRADES EN SUPABASE (para el dashboard web)
 # =============================================================================
 
 def registrar_trade_apertura_supabase(supabase, par: str, precio_entrada: float, cantidad: float):
     """
-    Inserta una fila en la tabla "trades" de Supabase al abrir una posicion.
-    Devuelve el id de la fila insertada (para poder actualizarla al cerrar),
-    o None si Supabase no esta configurado o la insercion falla.
+    Inserta una fila en la tabla "trades" de Supabase al abrir una posicion y
+    manda el aviso de Telegram correspondiente. Devuelve el id de la fila
+    insertada (para poder actualizarla al cerrar), o None si Supabase no
+    esta configurado o la insercion falla (el Telegram se manda igual).
     """
-    if supabase is None:
-        return None
+    trade_id = None
 
-    try:
-        respuesta = supabase.table(TABLA_TRADES).insert({
-            "pair": par,
-            "side": "BUY",
-            "entry_price": precio_entrada,
-            "quantity": cantidad,
-            "status": "open",
-        }).execute()
+    if supabase is not None:
+        try:
+            respuesta = supabase.table(TABLA_TRADES).insert({
+                "pair": par,
+                "side": "BUY",
+                "entry_price": precio_entrada,
+                "quantity": cantidad,
+                "status": "open",
+            }).execute()
 
-        trade_id = respuesta.data[0]["id"]
-        logger.info(f"[{par}] Trade registrado en Supabase (id={trade_id}).")
-        return trade_id
-    except Exception as error:
-        logger.error(f"[{par}] Error insertando trade en Supabase: {error}")
-        return None
+            trade_id = respuesta.data[0]["id"]
+            logger.info(f"[{par}] Trade registrado en Supabase (id={trade_id}).")
+        except Exception as error:
+            logger.error(f"[{par}] Error insertando trade en Supabase: {error}")
+
+    enviar_telegram_trade_abierto(par, precio_entrada, cantidad)
+    return trade_id
 
 
 def actualizar_trade_cierre_supabase(
-    supabase, trade_id, precio_salida: float, ganancia_usd: float, ganancia_pct: float, motivo: str
+    supabase,
+    trade_id,
+    par: str,
+    precio_entrada: float,
+    precio_salida: float,
+    ganancia_usd: float,
+    ganancia_pct: float,
+    motivo: str,
+    duracion_minutos: int,
 ) -> None:
     """
-    Actualiza en Supabase la fila del trade que se acaba de cerrar, con el
-    precio de salida, la ganancia y el motivo de cierre (TP o SL).
+    Actualiza en Supabase la fila del trade que se acaba de cerrar (si hay
+    trade_id) y manda el aviso de Telegram de cierre. El Telegram se manda
+    siempre, incluso si la actualizacion en Supabase falla.
     """
-    if supabase is None or trade_id is None:
-        return
+    if supabase is not None and trade_id is not None:
+        try:
+            supabase.table(TABLA_TRADES).update({
+                "exit_price": precio_salida,
+                "profit": ganancia_usd,
+                "profit_percent": ganancia_pct,
+                "status": "closed",
+                "reason": motivo,
+            }).eq("id", trade_id).execute()
+            logger.info(f"Trade {trade_id} actualizado en Supabase (cierre {motivo}).")
+        except Exception as error:
+            logger.error(f"Error actualizando trade {trade_id} en Supabase: {error}")
 
-    try:
-        supabase.table(TABLA_TRADES).update({
-            "exit_price": precio_salida,
-            "profit": ganancia_usd,
-            "profit_percent": ganancia_pct,
-            "status": "closed",
-            "reason": motivo,
-        }).eq("id", trade_id).execute()
-        logger.info(f"Trade {trade_id} actualizado en Supabase (cierre {motivo}).")
-    except Exception as error:
-        logger.error(f"Error actualizando trade {trade_id} en Supabase: {error}")
+    texto_motivo = "Take Profit" if motivo == "TP" else "Stop Loss"
+    signo = "+" if ganancia_usd >= 0 else "-"
+
+    enviar_telegram(
+        "✅ OPERACIÓN CERRADA\n"
+        f"Par: {formatear_par(par)}\n"
+        f"Entrada: ${precio_entrada:,.2f}\n"
+        f"Salida: ${precio_salida:,.2f}\n"
+        f"Ganancia: {signo}${abs(ganancia_usd):.2f} ({ganancia_pct:+.2f}%)\n"
+        f"Motivo: {texto_motivo}\n"
+        f"Duración: {formatear_duracion(duracion_minutos)}"
+    )
 
 
 def actualizar_heartbeat_supabase(supabase) -> None:
@@ -523,21 +648,19 @@ def main_analysis(cliente: Client, posiciones: dict, supabase=None) -> None:
                         ganancia_pct = (precio_actual - posicion["precio_entrada"]) / posicion["precio_entrada"] * 100
                         ganancia_usd = (precio_actual - posicion["precio_entrada"]) * posicion["cantidad"]
                         texto_motivo = "Take Profit alcanzado" if motivo_salida == "TP" else "Stop Loss alcanzado"
+                        duracion_minutos = int(
+                            (datetime.now() - datetime.fromisoformat(posicion["timestamp"])).total_seconds() / 60
+                        )
 
                         registrar_operacion(simbolo, "VENTA", precio_actual, posicion["cantidad"], texto_motivo)
                         actualizar_trade_cierre_supabase(
                             supabase, posicion.get("trade_id_supabase"),
-                            precio_actual, ganancia_usd, ganancia_pct, motivo_salida,
-                        )
-                        enviar_telegram(
-                            f"🔴 Posicion cerrada en {simbolo}\n"
-                            f"Motivo: {texto_motivo}\n"
-                            f"Precio entrada: {posicion['precio_entrada']:.2f}\n"
-                            f"Precio salida: {precio_actual:.2f}\n"
-                            f"Resultado: {ganancia_pct:+.2f}%"
+                            simbolo, posicion["precio_entrada"], precio_actual,
+                            ganancia_usd, ganancia_pct, motivo_salida, duracion_minutos,
                         )
 
-                        del posiciones[simbolo]
+                        with posiciones_lock:
+                            del posiciones[simbolo]
                         guardar_posiciones(posiciones)
                 else:
                     logger.info(
@@ -576,22 +699,16 @@ def main_analysis(cliente: Client, posiciones: dict, supabase=None) -> None:
                     trade_id_supabase = registrar_trade_apertura_supabase(
                         supabase, simbolo, precio_entrada, cantidad
                     )
-                    posiciones[simbolo] = {
-                        "precio_entrada": precio_entrada,
-                        "cantidad": cantidad,
-                        "timestamp": datetime.now().isoformat(),
-                        "trade_id_supabase": trade_id_supabase,
-                    }
+                    with posiciones_lock:
+                        posiciones[simbolo] = {
+                            "precio_entrada": precio_entrada,
+                            "cantidad": cantidad,
+                            "timestamp": datetime.now().isoformat(),
+                            "trade_id_supabase": trade_id_supabase,
+                        }
                     guardar_posiciones(posiciones)
 
                     registrar_operacion(simbolo, "COMPRA", precio_entrada, cantidad, "Senal RSI+MACD")
-                    enviar_telegram(
-                        f"🟢 Nueva compra en {simbolo}\n"
-                        f"Precio entrada: {precio_entrada:.2f}\n"
-                        f"Cantidad: {cantidad}\n"
-                        f"Monto: ${monto_a_usar:.2f}\n"
-                        f"RSI: {ultima_vela['rsi']:.2f}"
-                    )
             else:
                 logger.info(f"[{simbolo}] Sin senal de compra por ahora.")
 
@@ -627,6 +744,12 @@ def main() -> None:
         f"Balance USDT: {balance_inicial:.2f}\n"
         f"Take Profit: {PROFIT_TARGET * 100:.0f}% | Stop Loss: {STOP_LOSS * 100:.0f}%"
     )
+
+    hilo_resumen = threading.Thread(
+        target=hilo_resumen_periodico, args=(cliente, posiciones), daemon=True
+    )
+    hilo_resumen.start()
+    logger.info(f"Hilo de resumen periodico iniciado (cada {INTERVALO_RESUMEN_SEGUNDOS // 60} minutos).")
 
     while True:
         try:

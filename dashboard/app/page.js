@@ -105,6 +105,10 @@ export default function PaginaDashboard() {
         <>
           <TarjetasResumen datos={datos} />
 
+          <div className="mt-6">
+            <OperacionesAbiertas operaciones={datos.operacionesAbiertas} />
+          </div>
+
           <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
             <UltimoTrade trade={datos.ultimoTrade} />
             <GraficoGananciasPorDia datos={datos.gananciasPorDia} />
@@ -155,7 +159,7 @@ function Encabezado({ estadoBot }) {
 
 function TarjetasResumen({ datos }) {
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
       <Tarjeta titulo="Ganancia / Pérdida total">
         <p className={`text-3xl font-bold ${claseColorGanancia(datos.gananciaTotal)}`}>
           {formatearUSD(datos.gananciaTotal)}
@@ -163,9 +167,18 @@ function TarjetasResumen({ datos }) {
         <p className="mt-1 text-xs text-zinc-500">{datos.totalCerrados} operaciones cerradas</p>
       </Tarjeta>
 
+      <Tarjeta titulo="Operaciones">
+        <p className="text-sm text-zinc-300">
+          Abiertas: <span className="font-semibold text-emerald-400">{datos.totalAbiertos}</span>
+        </p>
+        <p className="mt-1 text-sm text-zinc-300">
+          Cerradas: <span className="font-semibold text-zinc-100">{datos.totalCerrados}</span>
+        </p>
+      </Tarjeta>
+
       <Tarjeta titulo="Win rate">
         <p className="text-3xl font-bold text-zinc-100">{datos.winRate.toFixed(1)}%</p>
-        <p className="mt-1 text-xs text-zinc-500">Operaciones ganadoras</p>
+        <p className="mt-1 text-xs text-zinc-500">Solo operaciones cerradas</p>
       </Tarjeta>
 
       <Tarjeta titulo="Pares activos">
@@ -190,6 +203,47 @@ function TarjetasResumen({ datos }) {
         </div>
         <p className="mt-2 text-xs text-zinc-500">Verde = posición abierta ahora mismo</p>
       </Tarjeta>
+    </div>
+  );
+}
+
+function OperacionesAbiertas({ operaciones }) {
+  const hayOperaciones = operaciones && operaciones.length > 0;
+
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5 shadow-sm">
+      <h2 className="mb-4 text-sm font-medium text-zinc-400">Operaciones abiertas</h2>
+
+      {!hayOperaciones ? (
+        <p className="text-sm text-zinc-500">Sin operaciones abiertas en este momento.</p>
+      ) : (
+        <div className="space-y-3">
+          {operaciones.map((op) => {
+            const profitConocido = op.profitActualPct !== null && op.profitActualPct !== undefined;
+            return (
+              <div
+                key={op.id}
+                className="flex flex-col gap-1 rounded-lg border border-zinc-800/80 bg-zinc-950/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                  <span className="inline-flex items-center gap-1 font-medium text-emerald-400">
+                    🟢 ABIERTO
+                  </span>
+                  <span className="text-zinc-500">·</span>
+                  <span className="font-medium text-zinc-100">{op.pair}</span>
+                  <span className="text-zinc-500">·</span>
+                  <span className="text-zinc-300">Entrada: {formatearUSD(op.entry_price)}</span>
+                  <span className="text-zinc-500">·</span>
+                  <span className={profitConocido ? claseColorGanancia(op.profitActualPct) : "text-zinc-500"}>
+                    Profit actual: {profitConocido ? `${op.profitActualPct.toFixed(2)}%` : "sin datos"}
+                  </span>
+                </div>
+                <div className="text-xs text-zinc-500">⏱️ Abierta hace {op.minutosAbierto} min</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -248,7 +302,7 @@ function GraficoGananciasPorDia({ datos }) {
   return (
     <Tarjeta titulo="Ganancias por día">
       {hayDatos ? (
-        <div className="h-56 w-full">
+        <div className="h-56 w-full overflow-hidden">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={datos}>
               <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
@@ -289,6 +343,7 @@ function TablaHistorico({ historico }) {
           <table className="w-full min-w-[640px] text-left text-sm">
             <thead>
               <tr className="border-b border-zinc-800 text-zinc-500">
+                <th className="py-2 pr-4 font-medium">Estado</th>
                 <th className="py-2 pr-4 font-medium">Par</th>
                 <th className="py-2 pr-4 font-medium">Fecha</th>
                 <th className="py-2 pr-4 font-medium">Entrada</th>
@@ -300,6 +355,11 @@ function TablaHistorico({ historico }) {
             <tbody>
               {historico.map((trade) => (
                 <tr key={trade.id} className="border-b border-zinc-800/60 last:border-0">
+                  <td className="py-2 pr-4">
+                    <span className="inline-flex items-center gap-1 whitespace-nowrap text-emerald-400">
+                      ✅ CERRADO
+                    </span>
+                  </td>
                   <td className="py-2 pr-4 font-medium text-zinc-100">{trade.pair}</td>
                   <td className="py-2 pr-4 text-zinc-400">{formatearFecha(trade.created_at)}</td>
                   <td className="py-2 pr-4 text-zinc-300">{formatearUSD(trade.entry_price)}</td>
