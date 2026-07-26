@@ -46,10 +46,29 @@ function etiquetaMotivo(motivo) {
   return motivo || "-";
 }
 
+function formatearMoneda(valor, moneda, decimales = 2) {
+  if (valor === null || valor === undefined) return "-";
+  return `${valor.toLocaleString("es-AR", {
+    minimumFractionDigits: decimales,
+    maximumFractionDigits: decimales,
+  })} ${moneda}`;
+}
+
+function formatearHaceCuanto(timestampIso) {
+  if (!timestampIso) return "-";
+  const segundos = Math.max(0, Math.floor((Date.now() - new Date(timestampIso).getTime()) / 1000));
+  if (segundos < 60) return `hace ${segundos} segundos`;
+  return `hace ${Math.floor(segundos / 60)} min`;
+}
+
 export default function PaginaDashboard() {
+  const [tabActiva, setTabActiva] = useState("testnet");
   const [datos, setDatos] = useState(null);
+  const [capitalTestnet, setCapitalTestnet] = useState(null);
+  const [capitalReal, setCapitalReal] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState(null);
+  const [, forzarTick] = useState(0);
 
   useEffect(() => {
     let activo = true;
@@ -74,12 +93,38 @@ export default function PaginaDashboard() {
       }
     }
 
-    traerDatos();
-    const intervalo = setInterval(traerDatos, INTERVALO_ACTUALIZACION_MS);
+    async function traerCapitalTestnet() {
+      try {
+        const respuesta = await fetch("/api/capital", { cache: "no-store" });
+        const json = await respuesta.json();
+        if (activo && respuesta.ok && !json.error) setCapitalTestnet(json);
+      } catch {
+        // si falla, se mantiene el ultimo valor bueno conocido
+      }
+    }
+
+    async function traerCapitalReal() {
+      try {
+        const respuesta = await fetch("/api/capital-real", { cache: "no-store" });
+        const json = await respuesta.json();
+        if (activo) setCapitalReal(json);
+      } catch {
+        // si falla, se mantiene el ultimo valor bueno conocido
+      }
+    }
+
+    function actualizarTodo() {
+      return Promise.all([traerDatos(), traerCapitalTestnet(), traerCapitalReal()]);
+    }
+
+    actualizarTodo();
+    const intervalo = setInterval(actualizarTodo, INTERVALO_ACTUALIZACION_MS);
+    const tick = setInterval(() => forzarTick((n) => n + 1), 1000);
 
     return () => {
       activo = false;
       clearInterval(intervalo);
+      clearInterval(tick);
     };
   }, []);
 
@@ -95,14 +140,20 @@ export default function PaginaDashboard() {
     <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
       <Encabezado estadoBot={datos?.estadoBot} />
 
+      <TabsSelector tabActiva={tabActiva} onCambiar={setTabActiva} />
+
       {error && (
         <div className="mb-6 rounded-lg border border-red-800 bg-red-950/60 px-4 py-3 text-sm text-red-300">
           No se pudo conectar con la base de datos: {error}
         </div>
       )}
 
-      {datos && (
+      {tabActiva === "testnet" && datos && (
         <>
+          <div className="mb-6">
+            <TarjetaCapital datos={capitalTestnet} />
+          </div>
+
           <TarjetasResumen datos={datos} />
 
           <div className="mt-6">
@@ -117,9 +168,201 @@ export default function PaginaDashboard() {
           <div className="mt-6">
             <TablaHistorico historico={datos.historico} />
           </div>
+
+          <div className="mt-6 inline-flex items-center gap-2 rounded-full bg-emerald-500/15 px-3 py-1 text-sm font-medium text-emerald-400 ring-1 ring-emerald-500/30">
+            ✅ BOT OPERANDO
+          </div>
+        </>
+      )}
+
+      {tabActiva === "real" && (
+        <>
+          <div className="mb-6">
+            <TarjetaCapitalReal datos={capitalReal} />
+          </div>
+
+          <div className="rounded-lg border border-amber-700/50 bg-amber-950/40 px-4 py-3 text-sm text-amber-300">
+            ⚠️ Bot NO opera aquí todavía. Solo lectura. Cuando testnet sea rentable, cambiaremos a esta cuenta.
+          </div>
         </>
       )}
     </main>
+  );
+}
+
+function TabsSelector({ tabActiva, onCambiar }) {
+  const base = "rounded-t-lg px-4 py-2 text-sm font-medium border-b-2 transition-colors";
+  return (
+    <div className="mb-6 flex gap-2 border-b border-zinc-800">
+      <button
+        type="button"
+        onClick={() => onCambiar("testnet")}
+        className={`${base} ${
+          tabActiva === "testnet"
+            ? "border-emerald-400 text-emerald-400"
+            : "border-transparent text-zinc-500 hover:text-zinc-300"
+        }`}
+      >
+        🟢 TESTNET (Ficticio)
+      </button>
+      <button
+        type="button"
+        onClick={() => onCambiar("real")}
+        className={`${base} ${
+          tabActiva === "real"
+            ? "border-sky-400 text-sky-400"
+            : "border-transparent text-zinc-500 hover:text-zinc-300"
+        }`}
+      >
+        🏦 REAL (Lectura)
+      </button>
+    </div>
+  );
+}
+
+function EstadisticaCapital({ etiqueta, valor }) {
+  return (
+    <div>
+      <p className="text-xs text-zinc-500">{etiqueta}</p>
+      <p className="mt-0.5 text-base font-semibold text-zinc-100">{valor}</p>
+    </div>
+  );
+}
+
+function TarjetaCapital({ datos }) {
+  if (!datos) {
+    return (
+      <Tarjeta titulo="🟢 Capital Testnet">
+        <p className="text-sm text-zinc-500">Cargando balance de Binance Testnet...</p>
+      </Tarjeta>
+    );
+  }
+
+  return (
+    <Tarjeta titulo="🟢 Capital Testnet">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <EstadisticaCapital etiqueta="Depositado" valor={formatearMoneda(datos.capital_inicial, datos.moneda)} />
+        <EstadisticaCapital
+          etiqueta="Balance actual"
+          valor={formatearMoneda(datos.balance_actual, datos.moneda, 2)}
+        />
+        <EstadisticaCapital
+          etiqueta="Profit total"
+          valor={
+            <span className={claseColorGanancia(datos.profit_loss)}>
+              {datos.profit_loss >= 0 ? "+" : ""}
+              {formatearMoneda(datos.profit_loss, datos.moneda)}
+            </span>
+          }
+        />
+        <EstadisticaCapital
+          etiqueta="% Rendimiento"
+          valor={
+            <span className={claseColorGanancia(datos.profit_percent)}>
+              {datos.profit_percent >= 0 ? "+" : ""}
+              {datos.profit_percent.toFixed(3)}%
+            </span>
+          }
+        />
+      </div>
+      <p className="mt-3 text-xs text-zinc-500">Actualizado {formatearHaceCuanto(datos.timestamp)}</p>
+    </Tarjeta>
+  );
+}
+
+function TarjetaCapitalReal({ datos }) {
+  if (!datos) {
+    return (
+      <Tarjeta titulo="🏦 Capital Real (en vivo)">
+        <p className="text-sm text-zinc-500">Cargando...</p>
+      </Tarjeta>
+    );
+  }
+
+  if (datos.configurado === false) {
+    return (
+      <Tarjeta titulo="🏦 Capital Real (en vivo)">
+        <p className="text-sm text-zinc-500">
+          Credenciales de Binance real no configuradas todavía. {datos.mensaje}
+        </p>
+      </Tarjeta>
+    );
+  }
+
+  if (datos.error) {
+    return (
+      <Tarjeta titulo="🏦 Capital Real (en vivo)">
+        <p className="text-sm text-red-400">{datos.error}</p>
+      </Tarjeta>
+    );
+  }
+
+  return (
+    <Tarjeta titulo="🏦 Capital Real (en vivo)">
+      <div className="space-y-4">
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-sky-400">
+            💵 En pesos argentinos (ARS)
+          </p>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <EstadisticaCapital etiqueta="Depositado" valor={formatearMoneda(datos.capital_inicial_ars, "ARS")} />
+            <EstadisticaCapital
+              etiqueta="Balance actual"
+              valor={formatearMoneda(datos.balance_actual_ars, "ARS")}
+            />
+            <EstadisticaCapital
+              etiqueta="Profit total"
+              valor={
+                <span className={claseColorGanancia(datos.profit_loss_ars)}>
+                  {datos.profit_loss_ars >= 0 ? "+" : ""}
+                  {formatearMoneda(datos.profit_loss_ars, "ARS")}
+                </span>
+              }
+            />
+            <EstadisticaCapital
+              etiqueta="% Rendimiento"
+              valor={
+                <span className={claseColorGanancia(datos.profit_percent)}>
+                  {datos.profit_percent >= 0 ? "+" : ""}
+                  {datos.profit_percent.toFixed(2)}%
+                </span>
+              }
+            />
+          </div>
+        </div>
+
+        <p className="text-xs text-zinc-500">
+          🔄 Tipo de cambio: 1 USDT = {datos.tipo_cambio_usdt_ars.toFixed(2)} ARS ({datos.fuente_tipo_cambio})
+        </p>
+
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-sky-300">
+            💎 En criptomoneda (USDT)
+          </p>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <EstadisticaCapital
+              etiqueta="Depositado"
+              valor={formatearMoneda(datos.capital_inicial_usdt, "USDT", 4)}
+            />
+            <EstadisticaCapital
+              etiqueta="Balance actual"
+              valor={formatearMoneda(datos.balance_actual_usdt, "USDT", 4)}
+            />
+            <EstadisticaCapital
+              etiqueta="Profit total"
+              valor={
+                <span className={claseColorGanancia(datos.profit_loss_usdt)}>
+                  {datos.profit_loss_usdt >= 0 ? "+" : ""}
+                  {formatearMoneda(datos.profit_loss_usdt, "USDT", 4)}
+                </span>
+              }
+            />
+          </div>
+        </div>
+
+        <p className="text-xs text-zinc-500">Actualizado {formatearHaceCuanto(datos.timestamp)}</p>
+      </div>
+    </Tarjeta>
   );
 }
 
