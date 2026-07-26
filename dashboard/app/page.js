@@ -66,6 +66,7 @@ export default function PaginaDashboard() {
   const [datos, setDatos] = useState(null);
   const [capitalTestnet, setCapitalTestnet] = useState(null);
   const [capitalReal, setCapitalReal] = useState(null);
+  const [capitalRipio, setCapitalRipio] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState(null);
   const [, forzarTick] = useState(0);
@@ -113,8 +114,18 @@ export default function PaginaDashboard() {
       }
     }
 
+    async function traerCapitalRipio() {
+      try {
+        const respuesta = await fetch("/api/capital-ripio", { cache: "no-store" });
+        const json = await respuesta.json();
+        if (activo) setCapitalRipio(json);
+      } catch {
+        // si falla, se mantiene el ultimo valor bueno conocido
+      }
+    }
+
     function actualizarTodo() {
-      return Promise.all([traerDatos(), traerCapitalTestnet(), traerCapitalReal()]);
+      return Promise.all([traerDatos(), traerCapitalTestnet(), traerCapitalReal(), traerCapitalRipio()]);
     }
 
     actualizarTodo();
@@ -186,7 +197,36 @@ export default function PaginaDashboard() {
           </div>
         </>
       )}
+
+      {tabActiva === "ripio" && (
+        <>
+          <div className="mb-6">
+            <TarjetaCapital datos={capitalRipio} titulo="🏦 Capital Ripio (en vivo)" />
+          </div>
+
+          <BadgeEstadoRipio estadoBot={capitalRipio?.estadoBot} />
+        </>
+      )}
     </main>
+  );
+}
+
+function BadgeEstadoRipio({ estadoBot }) {
+  const operando = estadoBot === "operando";
+  const inactivo = estadoBot === "inactivo";
+
+  const colorPill = operando
+    ? "bg-emerald-500/15 text-emerald-400 ring-emerald-500/30"
+    : inactivo
+    ? "bg-red-500/15 text-red-400 ring-red-500/30"
+    : "bg-zinc-500/15 text-zinc-400 ring-zinc-500/30";
+
+  const texto = operando ? "✅ BOT OPERANDO" : inactivo ? "🔴 Bot inactivo" : "Estado desconocido";
+
+  return (
+    <div className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-sm font-medium ring-1 ${colorPill}`}>
+      {texto}
+    </div>
   );
 }
 
@@ -216,6 +256,17 @@ function TabsSelector({ tabActiva, onCambiar }) {
       >
         🏦 REAL (Lectura)
       </button>
+      <button
+        type="button"
+        onClick={() => onCambiar("ripio")}
+        className={`${base} ${
+          tabActiva === "ripio"
+            ? "border-orange-400 text-orange-400"
+            : "border-transparent text-zinc-500 hover:text-zinc-300"
+        }`}
+      >
+        🏦 RIPIO REAL
+      </button>
     </div>
   );
 }
@@ -229,17 +280,33 @@ function EstadisticaCapital({ etiqueta, valor }) {
   );
 }
 
-function TarjetaCapital({ datos }) {
+function TarjetaCapital({ datos, titulo = "🟢 Capital Testnet" }) {
   if (!datos) {
     return (
-      <Tarjeta titulo="🟢 Capital Testnet">
-        <p className="text-sm text-zinc-500">Cargando balance de Binance Testnet...</p>
+      <Tarjeta titulo={titulo}>
+        <p className="text-sm text-zinc-500">Cargando balance...</p>
+      </Tarjeta>
+    );
+  }
+
+  if (datos.configurado === false) {
+    return (
+      <Tarjeta titulo={titulo}>
+        <p className="text-sm text-zinc-500">Credenciales no configuradas todavía. {datos.mensaje}</p>
+      </Tarjeta>
+    );
+  }
+
+  if (datos.error) {
+    return (
+      <Tarjeta titulo={titulo}>
+        <p className="text-sm text-red-400">{datos.error}</p>
       </Tarjeta>
     );
   }
 
   return (
-    <Tarjeta titulo="🟢 Capital Testnet">
+    <Tarjeta titulo={titulo}>
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <EstadisticaCapital etiqueta="Depositado" valor={formatearMoneda(datos.capital_inicial, datos.moneda)} />
         <EstadisticaCapital
