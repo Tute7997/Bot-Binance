@@ -65,8 +65,7 @@ export default function PaginaDashboard() {
   const [tabActiva, setTabActiva] = useState("testnet");
   const [datos, setDatos] = useState(null);
   const [capitalTestnet, setCapitalTestnet] = useState(null);
-  const [capitalReal, setCapitalReal] = useState(null);
-  const [capitalRipio, setCapitalRipio] = useState(null);
+  const [capitalKraken, setCapitalKraken] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState(null);
   const [, forzarTick] = useState(0);
@@ -104,28 +103,18 @@ export default function PaginaDashboard() {
       }
     }
 
-    async function traerCapitalReal() {
+    async function traerCapitalKraken() {
       try {
-        const respuesta = await fetch("/api/capital-real", { cache: "no-store" });
+        const respuesta = await fetch("/api/capital-kraken", { cache: "no-store" });
         const json = await respuesta.json();
-        if (activo) setCapitalReal(json);
-      } catch {
-        // si falla, se mantiene el ultimo valor bueno conocido
-      }
-    }
-
-    async function traerCapitalRipio() {
-      try {
-        const respuesta = await fetch("/api/capital-ripio", { cache: "no-store" });
-        const json = await respuesta.json();
-        if (activo) setCapitalRipio(json);
+        if (activo) setCapitalKraken(json);
       } catch {
         // si falla, se mantiene el ultimo valor bueno conocido
       }
     }
 
     function actualizarTodo() {
-      return Promise.all([traerDatos(), traerCapitalTestnet(), traerCapitalReal(), traerCapitalRipio()]);
+      return Promise.all([traerDatos(), traerCapitalTestnet(), traerCapitalKraken()]);
     }
 
     actualizarTodo();
@@ -186,32 +175,20 @@ export default function PaginaDashboard() {
         </>
       )}
 
-      {tabActiva === "real" && (
+      {tabActiva === "kraken" && (
         <>
           <div className="mb-6">
-            <TarjetaCapitalReal datos={capitalReal} />
+            <TarjetaCapital datos={capitalKraken} titulo="💰 Capital Kraken (en vivo)" />
           </div>
 
-          <div className="rounded-lg border border-amber-700/50 bg-amber-950/40 px-4 py-3 text-sm text-amber-300">
-            ⚠️ Bot NO opera aquí todavía. Solo lectura. Cuando testnet sea rentable, cambiaremos a esta cuenta.
-          </div>
-        </>
-      )}
-
-      {tabActiva === "ripio" && (
-        <>
-          <div className="mb-6">
-            <TarjetaCapital datos={capitalRipio} titulo="🏦 Capital Ripio (en vivo)" />
-          </div>
-
-          <BadgeEstadoRipio estadoBot={capitalRipio?.estadoBot} />
+          <BadgeEstadoOperando estadoBot={capitalKraken?.estadoBot} />
         </>
       )}
     </main>
   );
 }
 
-function BadgeEstadoRipio({ estadoBot }) {
+function BadgeEstadoOperando({ estadoBot }) {
   const operando = estadoBot === "operando";
   const inactivo = estadoBot === "inactivo";
 
@@ -247,25 +224,14 @@ function TabsSelector({ tabActiva, onCambiar }) {
       </button>
       <button
         type="button"
-        onClick={() => onCambiar("real")}
+        onClick={() => onCambiar("kraken")}
         className={`${base} ${
-          tabActiva === "real"
-            ? "border-sky-400 text-sky-400"
-            : "border-transparent text-zinc-500 hover:text-zinc-300"
-        }`}
-      >
-        🏦 REAL (Lectura)
-      </button>
-      <button
-        type="button"
-        onClick={() => onCambiar("ripio")}
-        className={`${base} ${
-          tabActiva === "ripio"
+          tabActiva === "kraken"
             ? "border-orange-400 text-orange-400"
             : "border-transparent text-zinc-500 hover:text-zinc-300"
         }`}
       >
-        🏦 RIPIO REAL
+        💰 KRAKEN REAL
       </button>
     </div>
   );
@@ -333,102 +299,6 @@ function TarjetaCapital({ datos, titulo = "🟢 Capital Testnet" }) {
         />
       </div>
       <p className="mt-3 text-xs text-zinc-500">Actualizado {formatearHaceCuanto(datos.timestamp)}</p>
-    </Tarjeta>
-  );
-}
-
-function TarjetaCapitalReal({ datos }) {
-  if (!datos) {
-    return (
-      <Tarjeta titulo="🏦 Capital Real (en vivo)">
-        <p className="text-sm text-zinc-500">Cargando...</p>
-      </Tarjeta>
-    );
-  }
-
-  if (datos.configurado === false) {
-    return (
-      <Tarjeta titulo="🏦 Capital Real (en vivo)">
-        <p className="text-sm text-zinc-500">
-          Credenciales de Binance real no configuradas todavía. {datos.mensaje}
-        </p>
-      </Tarjeta>
-    );
-  }
-
-  if (datos.error) {
-    return (
-      <Tarjeta titulo="🏦 Capital Real (en vivo)">
-        <p className="text-sm text-red-400">{datos.error}</p>
-      </Tarjeta>
-    );
-  }
-
-  return (
-    <Tarjeta titulo="🏦 Capital Real (en vivo)">
-      <div className="space-y-4">
-        <div>
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-sky-400">
-            💵 En pesos argentinos (ARS)
-          </p>
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <EstadisticaCapital etiqueta="Depositado" valor={formatearMoneda(datos.capital_inicial_ars, "ARS")} />
-            <EstadisticaCapital
-              etiqueta="Balance actual"
-              valor={formatearMoneda(datos.balance_actual_ars, "ARS")}
-            />
-            <EstadisticaCapital
-              etiqueta="Profit total"
-              valor={
-                <span className={claseColorGanancia(datos.profit_loss_ars)}>
-                  {datos.profit_loss_ars >= 0 ? "+" : ""}
-                  {formatearMoneda(datos.profit_loss_ars, "ARS")}
-                </span>
-              }
-            />
-            <EstadisticaCapital
-              etiqueta="% Rendimiento"
-              valor={
-                <span className={claseColorGanancia(datos.profit_percent)}>
-                  {datos.profit_percent >= 0 ? "+" : ""}
-                  {datos.profit_percent.toFixed(2)}%
-                </span>
-              }
-            />
-          </div>
-        </div>
-
-        <p className="text-xs text-zinc-500">
-          🔄 Tipo de cambio: 1 USDT = {datos.tipo_cambio_usdt_ars.toFixed(2)} ARS ({datos.fuente_tipo_cambio})
-        </p>
-
-        <div>
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-sky-300">
-            💎 En criptomoneda (USDT)
-          </p>
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <EstadisticaCapital
-              etiqueta="Depositado"
-              valor={formatearMoneda(datos.capital_inicial_usdt, "USDT", 4)}
-            />
-            <EstadisticaCapital
-              etiqueta="Balance actual"
-              valor={formatearMoneda(datos.balance_actual_usdt, "USDT", 4)}
-            />
-            <EstadisticaCapital
-              etiqueta="Profit total"
-              valor={
-                <span className={claseColorGanancia(datos.profit_loss_usdt)}>
-                  {datos.profit_loss_usdt >= 0 ? "+" : ""}
-                  {formatearMoneda(datos.profit_loss_usdt, "USDT", 4)}
-                </span>
-              }
-            />
-          </div>
-        </div>
-
-        <p className="text-xs text-zinc-500">Actualizado {formatearHaceCuanto(datos.timestamp)}</p>
-      </div>
     </Tarjeta>
   );
 }

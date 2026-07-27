@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { obtenerBalanceRipio } from "../../../lib/ripioSigned";
+import { obtenerBalanceKraken } from "../../../lib/krakenSigned";
 import { obtenerClienteSupabase } from "../../../lib/supabaseClient";
 
 const HEARTBEAT_LIMITE_SEGUNDOS = 150;
@@ -8,7 +8,7 @@ async function obtenerEstadoBot() {
   try {
     const supabase = obtenerClienteSupabase();
     const { data: heartbeat, error } = await supabase
-      .from("ripio_heartbeat")
+      .from("kraken_heartbeat")
       .select("last_check")
       .eq("id", 1)
       .maybeSingle();
@@ -23,23 +23,22 @@ async function obtenerEstadoBot() {
 }
 
 export async function GET() {
-  const clientId = process.env.RIPIO_CLIENT_ID;
-  const clientSecret = process.env.RIPIO_CLIENT_SECRET;
-  const endUserId = process.env.RIPIO_END_USER_ID || "ripio-bot-principal";
-  // USDT_USD es el unico par confirmado en la documentacion de Ripio B2B,
-  // por eso el balance se lee en USD (ver ripio-bot.py para el detalle).
-  const capitalInicial = parseFloat(process.env.RIPIO_CAPITAL_INICIAL || "119");
+  const apiKey = process.env.KRAKEN_API_KEY;
+  const apiSecret = process.env.KRAKEN_PRIVATE_KEY;
+  // Kraken no tiene pares en ARS (verificado en vivo contra /0/public/AssetPairs):
+  // XXBTZUSD/XETHZUSD cotizan en USD, asi que el balance se lee en USD (ZUSD).
+  const capitalInicial = parseFloat(process.env.KRAKEN_CAPITAL_INICIAL || "0");
 
-  if (!clientId || !clientSecret) {
+  if (!apiKey || !apiSecret) {
     return NextResponse.json({
       configurado: false,
-      mensaje: "Faltan RIPIO_CLIENT_ID / RIPIO_CLIENT_SECRET en dashboard/.env.local.",
+      mensaje: "Faltan KRAKEN_API_KEY / KRAKEN_PRIVATE_KEY en dashboard/.env.local.",
     });
   }
 
   try {
     const [balanceActual, estadoBot] = await Promise.all([
-      obtenerBalanceRipio({ clientId, clientSecret, endUserId, moneda: "USD" }),
+      obtenerBalanceKraken({ apiKey, apiSecret, activo: "ZUSD" }),
       obtenerEstadoBot(),
     ]);
 
@@ -48,7 +47,7 @@ export async function GET() {
 
     return NextResponse.json({
       configurado: true,
-      tipo: "ripio",
+      tipo: "kraken",
       capital_inicial: capitalInicial,
       balance_actual: balanceActual,
       profit_loss: profitLoss,
@@ -59,7 +58,7 @@ export async function GET() {
     });
   } catch (error) {
     return NextResponse.json(
-      { configurado: true, error: `No se pudo leer el balance de Ripio: ${error.message}` },
+      { configurado: true, error: `No se pudo leer el balance de Kraken: ${error.message}` },
       { status: 500 }
     );
   }
