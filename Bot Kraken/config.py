@@ -52,7 +52,9 @@ TIMEOUT_SEGUNDOS = TIMEOUT_HORAS * 3600
 # =============================================================================
 
 RSI_PERIODO = 14
-RSI_UMBRAL = 30
+# SIMULACION: 20 en vez de 30 (sobreventa mas realista, no extrema) para ver
+# mas entradas y calibrar con datos reales. Reajustar antes de ir a real.
+RSI_UMBRAL = 20
 MACD_RAPIDA = 12
 MACD_LENTA = 26
 MACD_SENAL = 9
@@ -61,7 +63,10 @@ MACD_SENAL = 9
 # habilitar una entrada, ademas de la señal RSI+MACD. Se loguea siempre
 # (pase o no el filtro) para poder calibrarlo con datos reales.
 ATR_PERIODO = 14
-UMBRAL_VOLATILIDAD_PCT = 0.0015  # 0.15% del precio, punto de partida
+# SIMULACION: 0.0008 en vez de 0.0015 (permitir mas entradas incluso con
+# volatilidad baja) para juntar datos y calibrar. Reajustar antes de ir a real
+# segun las ganancias/perdidas observadas.
+UMBRAL_VOLATILIDAD_PCT = 0.0008
 
 # =============================================================================
 # VELAS Y FRECUENCIA DE ANALISIS
