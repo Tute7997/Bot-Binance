@@ -4,6 +4,7 @@ import { obtenerClienteSupabase } from "../../../lib/supabaseClient";
 // Mismo capital piso que Bot Kraken/config.py (CAPITAL_FLOOR_USD).
 const CAPITAL_PISO_USD = 5.0;
 const HISTORICO_LIMITE = 50;
+const HEARTBEAT_MULTI_LIMITE_SEGUNDOS = 120;
 
 // Mismos pares/nombres que Bot Kraken/config.py (PARES / NOMBRES_PARES).
 // No se importa Python desde acá, se redeclara igual que el resto de las
@@ -24,6 +25,25 @@ function mapearTrade(trade) {
   };
 }
 
+async function obtenerEstadoBotMulti(supabase) {
+  try {
+    const { data, error } = await supabase
+      .from("kraken_multi_heartbeat")
+      .select("last_check")
+      .eq("id", 1)
+      .maybeSingle();
+
+    if (error || !data?.last_check) {
+      return { activo: false, ultimoCheck: null };
+    }
+
+    const segundos = (Date.now() - new Date(data.last_check).getTime()) / 1000;
+    return { activo: segundos <= HEARTBEAT_MULTI_LIMITE_SEGUNDOS, ultimoCheck: data.last_check };
+  } catch {
+    return { activo: false, ultimoCheck: null };
+  }
+}
+
 export async function GET() {
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
     return NextResponse.json({
@@ -35,13 +55,14 @@ export async function GET() {
   try {
     const supabase = obtenerClienteSupabase();
 
-    const [sesionesAbiertasRespuesta, sesionesCerradasRespuesta] = await Promise.all([
+    const [sesionesAbiertasRespuesta, sesionesCerradasRespuesta, estadoBotMulti] = await Promise.all([
       supabase.from("sessions_multi").select("*").eq("estado", "abierta"),
       supabase
         .from("sessions_multi")
         .select("*")
         .eq("estado", "cerrada")
         .order("timestamp_cierre", { ascending: false }),
+      obtenerEstadoBotMulti(supabase),
     ]);
 
     if (sesionesAbiertasRespuesta.error) throw sesionesAbiertasRespuesta.error;
@@ -130,6 +151,7 @@ export async function GET() {
       configurado: true,
       pares,
       historicoSesiones,
+      estadoBotMulti,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {

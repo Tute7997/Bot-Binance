@@ -33,6 +33,14 @@ function formatearDuracionSegundos(segundosTotales) {
   return `${horas}h ${minutos}m ${segundos}s`;
 }
 
+function formatearTiempoRelativo(segundos) {
+  if (segundos === null || segundos === undefined) return "sin datos";
+  if (segundos < 60) return `hace ${Math.floor(segundos)} segundos`;
+  const minutos = Math.floor(segundos / 60);
+  if (minutos < 60) return `hace ${minutos} minuto${minutos === 1 ? "" : "s"}`;
+  return `hace ${Math.floor(minutos / 60)}h ${minutos % 60}m`;
+}
+
 const TABS = [
   { id: "kraken", etiqueta: "Kraken" },
   { id: "krakenMulti", etiqueta: "Kraken Multi" },
@@ -371,6 +379,7 @@ function VistaKrakenMulti() {
   const [datos, setDatos] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState(null);
+  const [, forzarTick] = useState(0);
 
   async function traerDatosMulti() {
     try {
@@ -393,7 +402,12 @@ function VistaKrakenMulti() {
   useEffect(() => {
     traerDatosMulti();
     const intervalo = setInterval(traerDatosMulti, INTERVALO_ACTUALIZACION_MULTI_MS);
-    return () => clearInterval(intervalo);
+    const tick = setInterval(() => forzarTick((n) => n + 1), 1000);
+
+    return () => {
+      clearInterval(intervalo);
+      clearInterval(tick);
+    };
   }, []);
 
   if (cargando && !datos) {
@@ -404,11 +418,28 @@ function VistaKrakenMulti() {
     );
   }
 
+  const activo = datos?.estadoBotMulti?.activo;
+  const segundosDesdeCheck = datos?.estadoBotMulti?.ultimoCheck
+    ? (Date.now() - new Date(datos.estadoBotMulti.ultimoCheck).getTime()) / 1000
+    : null;
+
   return (
     <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-zinc-100 sm:text-3xl">🤖 Kraken Multi</h1>
-        <p className="text-sm text-zinc-500">BTC/USD · ETH/USD · SOL/USD — capital compuesto, $5 por par</p>
+      <div className="mb-8 flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+        <div>
+          <h1 className="text-2xl font-bold text-zinc-100 sm:text-3xl">🤖 Kraken Multi</h1>
+          <p className="text-sm text-zinc-500">BTC/USD · ETH/USD · SOL/USD — capital compuesto, $5 por par</p>
+        </div>
+        <span
+          className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-sm font-medium ring-1 ${
+            activo
+              ? "bg-emerald-500/15 text-emerald-400 ring-emerald-500/30"
+              : "bg-red-500/15 text-red-400 ring-red-500/30"
+          }`}
+        >
+          <span className={`h-2 w-2 rounded-full ${activo ? "bg-emerald-400" : "bg-red-400"}`} />
+          {activo ? "🟢 Bot Activo" : "🔴 Bot Offline"} ({formatearTiempoRelativo(segundosDesdeCheck)})
+        </span>
       </div>
 
       {error && (

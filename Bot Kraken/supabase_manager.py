@@ -44,6 +44,20 @@ def obtener_cliente_supabase():
         return None
 
 
+def actualizar_heartbeat(supabase) -> None:
+    """Upsert de la fila unica de heartbeat (id=1) con la hora actual (UTC)."""
+    if supabase is None:
+        return
+
+    try:
+        supabase.table(config.TABLA_HEARTBEAT_MULTI).upsert({
+            "id": config.HEARTBEAT_ID_MULTI,
+            "last_check": datetime.now(timezone.utc).isoformat(),
+        }).execute()
+    except Exception as error:
+        logger.error(f"Error actualizando heartbeat multi en Supabase: {error}")
+
+
 def crear_sesion(supabase, pair: str, capital_usado: float):
     """Inserta una fila 'abierta' en sessions_multi para este par. Devuelve el id o None."""
     if supabase is None:

@@ -659,6 +659,7 @@ async def main_async() -> None:
         while True:
             try:
                 await ciclo_analisis(estado)
+                await asyncio.to_thread(supabase_manager.actualizar_heartbeat, estado.supabase)
             except Exception as error:
                 logger.exception(f"Error critico en el ciclo principal: {error}")
                 enviar_telegram(f"❌ Error critico en el bot multi-par de Kraken: {error}")

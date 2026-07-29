@@ -90,3 +90,9 @@ ARCHIVO_LOG_OPERACIONES = "operaciones_kraken_multi.csv"
 
 TABLA_SESSIONS_MULTI = "sessions_multi"
 TABLA_TRADES_MULTI = "trades_multi"
+
+# Tabla propia (NO bot_heartbeat, que ya usa main.py) para que el dashboard
+# pueda saber si kraken-bot-multi.py especificamente esta vivo, sin
+# confundirlo con el heartbeat de otro bot.
+TABLA_HEARTBEAT_MULTI = "kraken_multi_heartbeat"
+HEARTBEAT_ID_MULTI = 1
