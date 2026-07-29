@@ -33,7 +33,39 @@ function formatearDuracionSegundos(segundosTotales) {
   return `${horas}h ${minutos}m ${segundos}s`;
 }
 
+const TABS = [
+  { id: "kraken", etiqueta: "Kraken" },
+  { id: "krakenMulti", etiqueta: "Kraken Multi" },
+];
+
 export default function PaginaDashboard() {
+  const [tabActiva, setTabActiva] = useState("kraken");
+
+  return (
+    <>
+      <div className="mx-auto flex max-w-4xl gap-2 px-4 pt-6 sm:px-6 lg:px-8">
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setTabActiva(tab.id)}
+            className={`rounded-full px-4 py-1.5 text-sm font-medium ring-1 transition-colors ${
+              tabActiva === tab.id
+                ? "bg-emerald-500/15 text-emerald-400 ring-emerald-500/30"
+                : "bg-zinc-500/10 text-zinc-400 ring-zinc-500/20 hover:text-zinc-200"
+            }`}
+          >
+            {tab.etiqueta}
+          </button>
+        ))}
+      </div>
+
+      {tabActiva === "kraken" ? <VistaKraken /> : <VistaKrakenMulti />}
+    </>
+  );
+}
+
+function VistaKraken() {
   const [datos, setDatos] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState(null);
@@ -318,6 +350,177 @@ function SeccionHistorico({ historico }) {
                       {sesion.profitPercent >= 0 ? "+" : ""}
                       {sesion.profitPercent.toFixed(2)}%
                     </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =============================================================================
+// KRAKEN MULTI (nuevo): BTC/ETH/SOL, sessions_multi + trades_multi
+// =============================================================================
+
+const INTERVALO_ACTUALIZACION_MULTI_MS = 5000;
+
+function VistaKrakenMulti() {
+  const [datos, setDatos] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState(null);
+
+  async function traerDatosMulti() {
+    try {
+      const respuesta = await fetch("/api/capital-kraken-multi", { cache: "no-store" });
+      const json = await respuesta.json();
+
+      if (!respuesta.ok || json.error) {
+        throw new Error(json.error || "Error desconocido consultando el servidor");
+      }
+
+      setDatos(json);
+      setError(null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setCargando(false);
+    }
+  }
+
+  useEffect(() => {
+    traerDatosMulti();
+    const intervalo = setInterval(traerDatosMulti, INTERVALO_ACTUALIZACION_MULTI_MS);
+    return () => clearInterval(intervalo);
+  }, []);
+
+  if (cargando && !datos) {
+    return (
+      <main className="flex min-h-screen items-center justify-center">
+        <p className="text-lg text-zinc-400">Cargando...</p>
+      </main>
+    );
+  }
+
+  return (
+    <main className="mx-auto max-w-4xl px-4 py-8 sm:px-6 lg:px-8">
+      <div className="mb-8">
+        <h1 className="text-2xl font-bold text-zinc-100 sm:text-3xl">🤖 Kraken Multi</h1>
+        <p className="text-sm text-zinc-500">BTC/USD · ETH/USD · SOL/USD — capital compuesto, $5 por par</p>
+      </div>
+
+      {error && (
+        <div className="mb-6 rounded-lg border border-red-800 bg-red-950/60 px-4 py-3 text-sm text-red-300">
+          No se pudo conectar con Supabase: {error}
+        </div>
+      )}
+
+      {datos?.configurado === false && (
+        <div className="mb-6 rounded-lg border border-amber-700/50 bg-amber-950/40 px-4 py-3 text-sm text-amber-300">
+          Credenciales de Supabase no configuradas todavía. {datos.mensaje}
+        </div>
+      )}
+
+      {datos && datos.configurado !== false && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            {(datos.pares || []).map((par) => (
+              <TarjetaPar key={par.pair} par={par} />
+            ))}
+          </div>
+
+          <SeccionHistoricoMulti historico={datos.historicoSesiones} />
+        </div>
+      )}
+    </main>
+  );
+}
+
+function TarjetaPar({ par }) {
+  const sesion = par.posicionAbierta;
+
+  const segundosAbierto = sesion?.timestampEntrada
+    ? Math.max(0, Math.floor((Date.now() - new Date(sesion.timestampEntrada).getTime()) / 1000))
+    : null;
+
+  return (
+    <Tarjeta titulo={par.nombre}>
+      <span
+        className={`mb-3 inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium ring-1 ${
+          sesion
+            ? "bg-emerald-500/15 text-emerald-400 ring-emerald-500/30"
+            : "bg-zinc-500/15 text-zinc-400 ring-zinc-500/30"
+        }`}
+      >
+        <span className={`h-1.5 w-1.5 rounded-full ${sesion ? "bg-emerald-400" : "bg-zinc-400"}`} />
+        {sesion ? "Posición abierta" : "Sin posición"}
+      </span>
+
+      <div className="mt-3 grid grid-cols-2 gap-3">
+        <Estadistica etiqueta="Capital actual" valor={formatearUSD(par.capitalActual)} />
+        {sesion && (
+          <>
+            <Estadistica etiqueta="Capital usado" valor={formatearUSD(sesion.capitalUsado)} />
+            <Estadistica etiqueta="Entrada" valor={formatearUSD(sesion.precioEntrada)} />
+            <Estadistica etiqueta="Cantidad" valor={sesion.cantidad ?? "-"} />
+            <Estadistica etiqueta="Tiempo abierto" valor={formatearDuracionSegundos(segundosAbierto)} />
+          </>
+        )}
+      </div>
+    </Tarjeta>
+  );
+}
+
+function SeccionHistoricoMulti({ historico }) {
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-5 shadow-sm">
+      <h2 className="mb-4 text-sm font-medium text-zinc-400">Histórico de sesiones (Kraken Multi)</h2>
+
+      {!historico || historico.length === 0 ? (
+        <p className="text-sm text-zinc-500">Todavía no se cerró ninguna sesión.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[720px] text-left text-sm">
+            <thead>
+              <tr className="border-b border-zinc-800 text-zinc-500">
+                <th className="py-2 pr-4 font-medium">Par</th>
+                <th className="py-2 pr-4 font-medium">Capital usado</th>
+                <th className="py-2 pr-4 font-medium">Entrada</th>
+                <th className="py-2 pr-4 font-medium">Salida</th>
+                <th className="py-2 pr-4 font-medium">%</th>
+                <th className="py-2 pr-4 font-medium">Ganancia</th>
+                <th className="py-2 pr-4 font-medium">Motivo</th>
+                <th className="py-2 pr-4 font-medium">Cierre</th>
+                <th className="py-2 pr-4 font-medium">Duración</th>
+              </tr>
+            </thead>
+            <tbody>
+              {historico.map((sesion) => {
+                const duracionSegundos =
+                  sesion.timestampCierre && sesion.timestampInicio
+                    ? (new Date(sesion.timestampCierre).getTime() - new Date(sesion.timestampInicio).getTime()) / 1000
+                    : null;
+
+                return (
+                  <tr key={sesion.sessionId} className="border-b border-zinc-800/60 last:border-0">
+                    <td className="py-2 pr-4 text-zinc-300">{sesion.nombre}</td>
+                    <td className="py-2 pr-4 text-zinc-300">{formatearUSD(sesion.capitalUsado)}</td>
+                    <td className="py-2 pr-4 text-zinc-300">{formatearUSD(sesion.precioEntrada)}</td>
+                    <td className="py-2 pr-4 text-zinc-300">{formatearUSD(sesion.precioSalida)}</td>
+                    <td className={`py-2 pr-4 font-medium ${claseColorGanancia(sesion.porcentajeGanancia)}`}>
+                      {sesion.porcentajeGanancia === null || sesion.porcentajeGanancia === undefined
+                        ? "-"
+                        : `${sesion.porcentajeGanancia >= 0 ? "+" : ""}${sesion.porcentajeGanancia.toFixed(2)}%`}
+                    </td>
+                    <td className={`py-2 pr-4 font-medium ${claseColorGanancia(sesion.ganancia)}`}>
+                      {sesion.ganancia >= 0 ? "+" : ""}
+                      {formatearUSD(sesion.ganancia)}
+                    </td>
+                    <td className="py-2 pr-4 text-zinc-400">{sesion.razonCierre || "-"}</td>
+                    <td className="py-2 pr-4 text-zinc-400">{formatearFecha(sesion.timestampCierre)}</td>
+                    <td className="py-2 pr-4 text-zinc-300">{formatearDuracionSegundos(duracionSegundos)}</td>
                   </tr>
                 );
               })}

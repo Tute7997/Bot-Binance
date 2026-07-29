@@ -523,10 +523,9 @@ async def analizar_par(par: str, estado: EstadoBot) -> None:
                         supabase_manager.cerrar_trade,
                         estado.supabase, posicion["trade_id"], precio_actual, ganancia_pct, motivo,
                     )
-                    capital_final = posicion["capital_usado"] + ganancia
                     await asyncio.to_thread(
                         supabase_manager.cerrar_sesion,
-                        estado.supabase, posicion["session_id"], capital_final, ganancia,
+                        estado.supabase, posicion["session_id"], ganancia, motivo,
                     )
 
                     with estado.lock:
@@ -583,7 +582,6 @@ async def analizar_par(par: str, estado: EstadoBot) -> None:
                 trade_id = await asyncio.to_thread(
                     supabase_manager.crear_trade,
                     estado.supabase, session_id, par, precio_entrada, cantidad,
-                    config.MODO_SIMULACION, orden.get("txid"),
                 )
 
                 with estado.lock:
